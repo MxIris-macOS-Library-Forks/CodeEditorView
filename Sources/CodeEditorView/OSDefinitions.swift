@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 
 import UIKit
 
@@ -81,6 +81,10 @@ extension NSFont {
   /// The constant adavance for a (horizontal) monospace font.
   ///
   var maximumHorizontalAdvancement: CGFloat { self.maximumAdvancement.width }
+  
+  /// The line height (which is an exting property on `UIFont`).
+  /// 
+  var lineHeight: CGFloat { ceil(ascender - descender - leading) }
 }
 extension NSColor {
 

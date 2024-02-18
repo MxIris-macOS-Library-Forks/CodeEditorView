@@ -43,7 +43,7 @@ struct MessageInfo {
 typealias MessageViews = [LineInfo.MessageBundle.ID: MessageInfo]
 
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 
 // MARK: -
 // MARK: UIKit version
@@ -52,14 +52,10 @@ typealias MessageViews = [LineInfo.MessageBundle.ID: MessageInfo]
 ///
 final class CodeView: UITextView {
 
-  // Components
-  let codeContentStorage: CodeContentStorage
-
   // Delegates
   fileprivate var codeViewDelegate:                     CodeViewDelegate?
   fileprivate var codeStorageDelegate:                  CodeStorageDelegate
   fileprivate let minimapTextLayoutManagerDelegate      = MinimapTextLayoutManagerDelegate()
-  fileprivate let minimapContentStorageDelegate         = MinimapContentStorageDelegate()
 
   // Subviews
   var gutterView:               GutterView?
@@ -82,12 +78,12 @@ final class CodeView: UITextView {
   @Invalidating(.layout, .display)
   var theme: Theme = .defaultLight {
     didSet {
-      font                                  = UIFont(name: theme.fontName, size: theme.fontSize)
+      font                                  = theme.font
       backgroundColor                       = theme.backgroundColour
       tintColor                             = theme.tintColour
       (textStorage as? CodeStorage)?.theme  = theme
-      currentLineHighlightView?.color       = theme.currentLineColour
       gutterView?.theme                     = theme
+      currentLineHighlightView?.color       = theme.currentLineColour
       minimapView?.backgroundColor          = theme.backgroundColour
       minimapGutterView?.theme              = theme
       documentVisibleBox?.backgroundColor   = theme.textColour.withAlphaComponent(0.1)
@@ -111,19 +107,25 @@ final class CodeView: UITextView {
     self.viewLayout = viewLayout
 
     // Use custom components that are gutter-aware and support code-specific editing actions and highlighting.
-    let codeLayoutManager  = NSTextLayoutManager(),
+    let textLayoutManager  = NSTextLayoutManager(),
         codeContainer      = CodeContainer(size: frame.size),
-        minimapCodeStorage = TextStorageObserver(),
-        codeStorage        = CodeStorage(theme: theme)
-    codeContentStorage = CodeContentStorage(observer: minimapCodeStorage)
-    codeLayoutManager.textContainer = codeContainer
-    codeContentStorage.textStorage  = codeStorage
-    codeContentStorage.addTextLayoutManager(codeLayoutManager)
+        codeStorage        = CodeStorage(theme: theme),
+        textContentStorage = CodeContentStorage()
+    textLayoutManager.textContainer = codeContainer
+    textContentStorage.addTextLayoutManager(textLayoutManager)
+    textContentStorage.primaryTextLayoutManager = textLayoutManager
+    textContentStorage.textStorage              = codeStorage
 
     codeStorageDelegate = CodeStorageDelegate(with: language)
 
     super.init(frame: frame, textContainer: codeContainer)
     codeContainer.textView = self
+
+    textLayoutManager.renderingAttributesValidator = { (textLayoutManager, layoutFragment) in
+      guard let textContentStorage = textLayoutManager.textContentManager as? NSTextContentStorage else { return }
+      codeStorage.setHighlightingAttributes(for: textContentStorage.range(for: layoutFragment.rangeInElement),
+                                            in: textLayoutManager)
+    }
 
     // We can't do this — see [Note NSTextViewportLayoutControllerDelegate].
     //
@@ -185,13 +187,18 @@ final class CodeView: UITextView {
         minimapDividerView = UIView()
     minimapView.codeView = self
 
-    minimapDividerView.backgroundColor   = .separator
-    self.minimapDividerView              = minimapDividerView
+    minimapDividerView.backgroundColor = .separator
+    self.minimapDividerView            = minimapDividerView
     addSubview(minimapDividerView)
 
-    if let minimapContentStorage = minimapView.optTextContentStorage {
-      minimapContentStorage.textStorage = minimapCodeStorage
-      minimapContentStorage.delegate    = minimapContentStorageDelegate
+    // We register the text layout manager of the minimap view as a secondary layout manager of the code view's text
+    // content storage, so that code view and minimap use the same content.
+    minimapView.textLayoutManager?.replace(textContentStorage)
+    textContentStorage.primaryTextLayoutManager = textLayoutManager
+    minimapView.textLayoutManager?.renderingAttributesValidator = { (minimapLayoutManager, layoutFragment) in
+      guard let textContentStorage = minimapLayoutManager.textContentManager as? NSTextContentStorage else { return }
+      codeStorage.setHighlightingAttributes(for: textContentStorage.range(for: layoutFragment.rangeInElement),
+                                            in: minimapLayoutManager)
     }
     minimapView.textLayoutManager?.delegate = minimapTextLayoutManagerDelegate
 
@@ -220,11 +227,25 @@ final class CodeView: UITextView {
     textDidChangeObserver
       = NotificationCenter.default.addObserver(forName: UITextView.textDidChangeNotification, 
                                                object: self,
-                                               queue: .main){ [weak self] _ in
+                                               queue: .main){ [weak self, minimapView, codeStorageDelegate] _ in
 
         self?.removeMessageViews(withIDs: self!.codeStorageDelegate.lastEvictedMessageIDs)
         self?.gutterView?.invalidateGutter()
         self?.minimapGutterView?.invalidateGutter()
+
+#if os(visionOS)
+        // See [Note Minimap Redraw Voodoo]
+        minimapView.textLayoutManager?.ensureLayout(for: minimapView.textLayoutManager!.documentRange)
+        minimapView.textLayoutManager?.invalidateLayout(for: minimapView.textLayoutManager!.documentRange)
+#elseif os(iOS)
+        // This doesn't seem to help on visionOS.
+        if (codeStorageDelegate.tokenInvalidationRange?.length ?? 0) > 1 {
+          Task { @MainActor in
+            minimapView.setNeedsLayout()
+            minimapView.setNeedsDisplay(minimapView.bounds)
+          }
+        }
+#endif
       }
   }
 
@@ -283,6 +304,7 @@ final class CodeViewDelegate: NSObject, UITextViewDelegate {
     didScroll?(scrollView)
 
     codeView.gutterView?.invalidateGutter()
+    codeView.adjustScrollPositionOfMinimap()
   }
 }
 
@@ -318,14 +340,10 @@ final class CodeBackgroundHighlightView: UIView {
 ///
 final class CodeView: NSTextView {
 
-  // Components
-  let codeContentStorage: CodeContentStorage
-
   // Delegates
   fileprivate let codeViewDelegate =                 CodeViewDelegate()
   fileprivate var codeStorageDelegate:               CodeStorageDelegate
   fileprivate let minimapTextLayoutManagerDelegate = MinimapTextLayoutManagerDelegate()
-  fileprivate let minimapContentStorageDelegate    = MinimapContentStorageDelegate()
 
   // Subviews
   var gutterView:               GutterView?
@@ -356,7 +374,6 @@ final class CodeView: NSTextView {
       (textStorage as? CodeStorage)?.theme = theme
       gutterView?.theme                    = theme
       currentLineHighlightView?.color      = theme.currentLineColour
-      minimapView?.font                    = OSFont(name: theme.font.fontName, size: theme.font.pointSize / minimapRatio)!
       minimapView?.backgroundColor         = theme.backgroundColour
       minimapGutterView?.theme             = theme
       documentVisibleBox?.fillColor        = theme.textColour.withAlphaComponent(0.1)
@@ -400,18 +417,24 @@ final class CodeView: NSTextView {
     self.viewLayout = viewLayout
 
     // Use custom components that are gutter-aware and support code-specific editing actions and highlighting.
-    let codeLayoutManager  = NSTextLayoutManager(),
+    let textLayoutManager  = NSTextLayoutManager(),
         codeContainer      = CodeContainer(size: frame.size),
-        minimapCodeStorage = TextStorageObserver(),
-        codeStorage        = CodeStorage(theme: theme)
-    codeContentStorage = CodeContentStorage(observer: minimapCodeStorage)
-    codeLayoutManager.textContainer = codeContainer
-    codeContentStorage.textStorage  = codeStorage
-    codeContentStorage.addTextLayoutManager(codeLayoutManager)
+        codeStorage        = CodeStorage(theme: theme),
+        textContentStorage = CodeContentStorage()
+    textLayoutManager.textContainer = codeContainer
+    textContentStorage.addTextLayoutManager(textLayoutManager)
+    textContentStorage.primaryTextLayoutManager = textLayoutManager
+    textContentStorage.textStorage              = codeStorage
 
     codeStorageDelegate = CodeStorageDelegate(with: language)
 
     super.init(frame: frame, textContainer: codeContainer)
+
+    textLayoutManager.renderingAttributesValidator = { (textLayoutManager, layoutFragment) in
+      guard let textContentStorage = textLayoutManager.textContentManager as? NSTextContentStorage else { return }
+      codeStorage.setHighlightingAttributes(for: textContentStorage.range(for: layoutFragment.rangeInElement),
+                                            in: textLayoutManager)
+    }
 
     // We can't do this — see [Note NSTextViewportLayoutControllerDelegate].
     //
@@ -493,9 +516,14 @@ final class CodeView: NSTextView {
     self.minimapDividerView = minimapDividerView
     // NB: The divider view is floating. We cannot add it now, as we don't have an `enclosingScrollView` yet.
 
-    if let minimapContentStorage = minimapView.optTextContentStorage {
-      minimapContentStorage.textStorage = minimapCodeStorage
-      minimapContentStorage.delegate    = minimapContentStorageDelegate
+    // We register the text layout manager of the minimap view as a secondary layout manager of the code view's text
+    // content storage, so that code view and minimap use the same content.
+    minimapView.textLayoutManager?.replace(textContentStorage)
+    textContentStorage.primaryTextLayoutManager = textLayoutManager
+    minimapView.textLayoutManager?.renderingAttributesValidator = { (minimapLayoutManager, layoutFragment) in
+      guard let textContentStorage = minimapLayoutManager.textContentManager as? NSTextContentStorage else { return }
+      codeStorage.setHighlightingAttributes(for: textContentStorage.range(for: layoutFragment.rangeInElement),
+                                            in: minimapLayoutManager)
     }
     minimapView.textLayoutManager?.delegate = minimapTextLayoutManagerDelegate
 
@@ -525,6 +553,13 @@ final class CodeView: NSTextView {
     self.documentVisibleBox = documentVisibleBox
 
     maxSize = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+
+    // This is needed to redo layout of the minimap once all the views are laid out.
+    // FIXME: Unfortunately, this comes with a visible delay, though.
+    Task { @MainActor in
+      minimapView.textLayoutManager?.invalidateLayout(for: minimapView.textLayoutManager!.documentRange)
+    }
 
     // We need to re-tile the subviews whenever the frame of the text view changes.
     frameChangedNotificationObserver
@@ -559,10 +594,6 @@ final class CodeView: NSTextView {
           messages.forEach{ report(message: $0) }
 
         }
-    }
-
-    Task { @MainActor in
-      adjustScrollPositionOfMinimap()
     }
   }
 
@@ -751,6 +782,12 @@ extension CodeView {
        let highlightRect    = lineBackgroundRect(y: fragmentFrame.minY, height: fragmentFrame.height)
     {
       currentLineHighlightView?.frame = highlightRect
+    } else
+    // OR the document is empty
+    if text.isEmpty,
+       let highlightRect = lineBackgroundRect(y: 0, height: font?.lineHeight ?? 0)
+    {
+      currentLineHighlightView?.frame = highlightRect
     }
   }
 
@@ -802,8 +839,6 @@ extension CodeView {
   private func tile() {
     guard let codeContainer = optTextContainer as? CodeContainer else { return }
 
-    ensureLayout()
-
 #if os(macOS)
     // Add the floating views if they are not yet in the view hierachy.
     // NB: Since macOS 14, we need to explicitly set clipping; otherwise, views will draw outside of the bounds of the
@@ -851,7 +886,6 @@ extension CodeView {
         codeViewWidth        = if viewLayout.showMinimap { gutterWithPadding + ceil(numberOfCharacters * fontWidth) }
                                else { visibleWidth },
         minimapWidth         = visibleWidth - codeViewWidth,
-        minimapCodeWidth     = minimapGutterWidth + numberOfCharacters * minimapFontWidth - 1,  // no rounding for the container
         minimapX             = floor(visibleWidth - minimapWidth),
         minimapExclusionPath = OSBezierPath(rect: minimapGutterRect),
         minimapDividerRect   = CGRect(x: minimapX - dividerWidth, y: 0, width: dividerWidth, height: minimumHeight).integral
@@ -877,7 +911,7 @@ extension CodeView {
       }
     }
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
     showsHorizontalScrollIndicator = !viewLayout.wrapText
     if viewLayout.wrapText && frame.size.width != visibleWidth { frame.size.width = visibleWidth }  // don't update frames in vain
 #elseif os(macOS)
@@ -900,14 +934,15 @@ extension CodeView {
     if textContainerInset.width != gutterWidth {
       textContainerInset = CGSize(width: gutterWidth, height: 0)
     }
-#elseif os(iOS)
+#elseif os(iOS) || os(visionOS)
     if textContainerInset.left != gutterWidth {
       textContainerInset = UIEdgeInsets(top: 0, left: gutterWidth, bottom: 0, right: 0)
     }
 #endif
 
-    // Set the text container area of the minimap text view
-    let minimapTextContainerWidth = if viewLayout.wrapText { minimapCodeWidth } else { CGFloat.greatestFiniteMagnitude }
+    // Set the width of the text container for the minimap just like that for the code view as the layout engine works
+    // on the original code view metrics. (Only after the layout is done, we scale it down to the size of the minimap.)
+    let minimapTextContainerWidth = codeContainerWidth
     let minimapTextContainer = minimapView?.textContainer
     if minimapWidth != minimapView?.frame.width || minimapTextContainerWidth != minimapTextContainer?.size.width {
 
@@ -949,7 +984,7 @@ extension CodeView {
 
     let visibleHeight = documentVisibleRect.size.height
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
     // We need to force the scroll view (superclass of `UITextView`) to accomodate the whole content without scrolling
     // and to extent over the whole visible height. (On macOS, the latter is enforced by setting `minSize` in `tile()`.)
     let minimapMinimalHeight = max(minimapHeight, documentVisibleRect.height)
@@ -1074,7 +1109,7 @@ extension CodeView {
     // TODO: CodeEditor needs to be parameterised by message theme
     let messageTheme = Message.defaultTheme
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     let background  = SwiftUI.Color(backgroundColor!)
     #elseif os(macOS)
     let background  = SwiftUI.Color(backgroundColor)
@@ -1167,7 +1202,7 @@ extension CodeView {
 
 final class CodeContainer: NSTextContainer {
 
-  #if os(iOS)
+  #if os(iOS) || os(visionOS)
   weak var textView: UITextView?
   #endif
 

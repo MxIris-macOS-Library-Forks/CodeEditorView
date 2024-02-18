@@ -5,7 +5,7 @@
 //
 //  This file contains `NSTextStorage` extensions for code editing.
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
@@ -14,7 +14,7 @@ import AppKit
 import LanguageSupport
 
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 typealias EditActions = NSTextStorage.EditActions
 #elseif os(macOS)
 typealias EditActions = NSTextStorageEditActions
@@ -63,44 +63,7 @@ class CodeStorage: NSTextStorage {
   override var fixesAttributesLazily: Bool { true }
 
   override func attributes(at location: Int, effectiveRange range: NSRangePointer?) -> [NSAttributedString.Key : Any] {
-
-    var attributes       = textStorage.attributes(at: location, effectiveRange: range)
-    var foregroundColour = theme.textColour
-    var tokenRange: NSRange
-
-    // Translate comment and token information to the appropriate foreground colour determined by the current theme.
-    if let commentRange = comment(at: location) {
-
-      tokenRange       = commentRange
-      foregroundColour = theme.commentColour
-
-    } else {
-
-      // NB: We always get a range, even if there is no token. In that case, the range is the space between the next
-      //     tokens (or a token and the line start or end).
-      let tokenWithEffectiveRange = token(at: location)
-      tokenRange = tokenWithEffectiveRange.effectiveRange
-
-      if let token = tokenWithEffectiveRange.token {
-
-        switch token.token {
-        case .string:     foregroundColour = theme.stringColour
-        case .character:  foregroundColour = theme.characterColour
-        case .number:     foregroundColour = theme.numberColour
-        case .identifier: foregroundColour = theme.identifierColour
-        case .keyword:    foregroundColour = theme.keywordColour
-        default: ()
-        }
-      }
-    }
-
-    // Crop the effective range to the token range.
-    if let rangePtr = range,
-       let newRange = rangePtr.pointee.intersection(tokenRange)
-    { rangePtr.pointee = newRange }
-
-    attributes[.foregroundColor] = foregroundColour
-    return attributes
+    return textStorage.attributes(at: location, effectiveRange: range)
   }
 
   // Extended to handle auto-deletion of adjacent matching brackets
@@ -110,7 +73,7 @@ class CodeStorage: NSTextStorage {
 
     // We are deleting one character => check whether it is a one-character bracket and if so also delete its matching
     // bracket if it is directly adjacent
-    if range.length == 1 && str == "",
+    if range.length == 1 && str.isEmpty,
        let deletedToken = token(at: range.location).token,
        let language     = (delegate as? CodeStorageDelegate)?.language,
        deletedToken.token.isOpenBracket
@@ -140,110 +103,61 @@ class CodeStorage: NSTextStorage {
   }
 }
 
+extension NSAttributedString.Key {
 
-// MARK: -
-// MARK: Text storage observation
-
-/// Text content storage that facilitates and additional read-only observer.
-///
-class CodeContentStorage: NSTextContentStorage {
-
-  /// The read-only text storage subclass that observes our text storage.
+  /// Attribute to indicate that an attribute run has the default styling and not a token-specific styling.
   ///
-  weak var observer: TextStorageObserver? {
-    didSet {
-      observer?.textStorage = textStorage
-    }
-  }
-
-  init(observer: TextStorageObserver) {
-    self.observer = observer
-    super.init()
-  }
-  
-  @available(*, unavailable)
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) has not been implemented")
-  }
-
-  override var textStorage: NSTextStorage? {
-    get { super.textStorage }
-    set {
-      super.textStorage     = newValue
-      observer?.textStorage = newValue
-    }
-  }
-
-  override func processEditing(for textStorage: NSTextStorage,
-                               edited editMask: EditActions,
-                               range newCharRange: NSRange,
-                               changeInLength delta: Int,
-                               invalidatedRange invalidatedCharRange: NSRange)
-  {
-    super.processEditing(for: textStorage,
-                         edited: editMask,
-                         range: newCharRange,
-                         changeInLength: delta,
-                         invalidatedRange: invalidatedCharRange)
-
-    // Forward editing events to the observing text storage, so that its text layout manager(s) trigger any
-    // necessary UI updates.
-    observer?.processEditing(for: textStorage,
-                             edited: editMask,
-                             range: newCharRange,
-                             changeInLength: delta,
-                             invalidatedRange: invalidatedCharRange)
-  }
+  static let hideInvisibles: NSAttributedString.Key = .init("hideInvisibles")
 }
 
-/// A text storage implementing a read-only code storage forwarder.
-///
-/// The `NSTextStorageObserving` protocol only supports a single observer per text storage. Hence, we use this
-/// forwarder to allow a second, but read-only observer. This does require the observer text storage to support an
-/// functionality for editing events.
-///
-final class TextStorageObserver: NSTextStorage {
-  var textStorage: NSTextStorage?
-
-  // MARK: `NSTextStorage` interface to override
-
-  override var string: String { textStorage?.string ?? "" }
-
-  // We access attributes through the API of the wrapped `NSTextStorage`; hence, lazy attribute fixing keeps working as
-  // before. (Lazy attribute fixing dramatically impacts performance due to syntax highlighting cutting the text up
-  // into lots of short attribute ranges.)
-  override var fixesAttributesLazily: Bool { true }
-
-  override func attributes(at location: Int, effectiveRange range: NSRangePointer?) -> [NSAttributedString.Key : Any] {
-    return textStorage?.attributes(at: location, effectiveRange: range) ?? [:]
-  }
-
-  override func replaceCharacters(in range: NSRange, with str: String) {
-    // read-only
-  }
-
-  override func setAttributes(_ attrs: [NSAttributedString.Key : Any]?, range: NSRange) {
-    // read-only
-  }
-
-
-  // MARK: Editing observation
+extension CodeStorage {
   
-  /// Entry point for forarded editing actions of the wrapped text storage.
+  /// Returns the theme colour for a line token.
   ///
-  func processEditing(for textStorage: NSTextStorage,
-                      edited editMask: EditActions,
-                      range newCharRange: NSRange,
-                      changeInLength delta: Int,
-                      invalidatedRange invalidatedCharRange: NSRange)
-  {
-    guard self.textStorage === textStorage else { return }
+  /// - Parameter linetoken: The line token whose colour is desired.
+  /// - Returns: The theme colour of the given line token.
+  ///
+  func colour(for linetoken: LineToken) -> OSColor {
+    switch linetoken.kind {
+    case .comment: theme.commentColour
+    case .token(let token):
+      switch token {
+      case .string:     theme.stringColour
+      case .character:  theme.characterColour
+      case .number:     theme.numberColour
+      case .identifier: theme.identifierColour
+      case .keyword:    theme.keywordColour
+      default:          theme.textColour
+      }
+    }
+  }
 
-    beginEditing()
-    edited(editMask,
-           range: NSRange(location: newCharRange.location, length: newCharRange.length - delta),
-           changeInLength: delta)
-    endEditing()
+  func setHighlightingAttributes(for range: NSRange, in layoutManager: NSTextLayoutManager)
+  {
+    // We cannot inline the body of the task, because `setRenderingAttributes` will not correctly interpret the text
+    // ranges in the case that we are in an edit operation. It is also undesirable to dispatch this block to the main
+    // queue as this will introduce a visible delay in the rendering of the highlighting.
+    //
+    // The "non-sendable type" warnings are rather unfortunate, but I don't have a better solution right now.
+    // Suggestions are welcome!
+    Task {
+      guard let contentStorage = layoutManager.textContentManager as? NSTextContentStorage
+      else { return }
+
+      if let textRange = contentStorage.textRange(for: range) {
+        layoutManager.setRenderingAttributes([.foregroundColor: theme.textColour, .hideInvisibles: ()],
+                                             for: textRange)
+      }
+      enumerateTokens(in: range) { lineToken in
+
+        if let documentRange = lineToken.range.intersection(range),
+           let textRange     = contentStorage.textRange(for: documentRange)
+        {
+          let colour = colour(for: lineToken)
+          layoutManager.setRenderingAttributes([.foregroundColor: colour], for: textRange)
+        }
+      }
+    }
   }
 }
 
@@ -345,6 +259,148 @@ extension CodeStorage {
     }
     return nil
   }
+  
+  /// Token representation for token enumeration, which includes simple tokens and comment spans.
+  ///
+  /// NB: In this representation tokens and comments never extend across lines.
+  ///
+  struct LineToken {
+    enum Kind {
+      case comment
+      case token(LanguageConfiguration.Token)
+    }
+
+    /// Token range, relative to the start of the document.
+    ///
+    let range: NSRange
+
+    /// Token start position, relative to the line on which the token is located.
+    ///
+    let column: Int
+
+    /// The kind of token.
+    ///
+    let kind: Kind
+    
+    /// Whether the line token represents a comment.
+    ///
+    var isComment: Bool {
+      switch kind {
+      case .comment: true
+      default:       false
+      }
+    }
+  }
+  
+  /// Enumerate tokens and comment spans from the given location onwards.
+  ///
+  /// - Parameters:
+  ///   - location: The location where the enumeration starts.
+  ///   - block: A block invoked for every token that also determines if the enumeration finishes early.
+  ///
+  /// The first enumerated token may have a starting location smaller than `location` (but it will extent until at least
+  /// `location`). Enumeration proceeds until the end of the document or until `block` returns `false`.
+  ///
+  func enumerateTokens(from location: Int, using block: (LineToken) -> Bool) {
+
+    // Enumerate the comemnt ranges and tokens on one line and optionally skip everything before a given start
+    // location. We can have tokens inside comment ranges. These tokens are being skipped. (We don't highlight inside
+    // comments, so far.) If a token and a comment begin at the same location, the comment takes precedence.
+    func enumerate(tokens: [LanguageConfiguration.Tokeniser.Token],
+                   commentRanges: [NSRange],
+                   lineStart: Int,
+                   startLocation: Int?)
+    -> Bool
+    {
+      var skipUntil: Int? = startLocation  // tokens from this location onwards (even in part) are enumerated
+
+      var tokens        = tokens
+      var commentRanges = commentRanges
+      while !tokens.isEmpty || !commentRanges.isEmpty {
+
+        let token        = tokens.first,
+            commentRange = commentRanges.first
+        if let token,
+           (commentRange?.location ?? Int.max) > token.range.location {
+
+          if skipUntil ?? 0 <= token.range.max - 1,
+             let range = token.range.shifted(by: lineStart)
+          {
+            let doContinue = block(LineToken(range: range, column: token.range.location, kind: .token(token.token)))
+            if !doContinue { return false }
+          }
+          tokens.removeFirst()
+
+        } else if let commentRange {
+
+          if skipUntil ?? 0 <= commentRange.max - 1,
+             let range = commentRange.shifted(by: lineStart)
+          {
+            let doContinue = block(LineToken(range: range, column: commentRange.location, kind: .comment))
+            if !doContinue { return false }
+            skipUntil = commentRange.max      // skip tokens within the comment range
+          }
+          commentRanges.removeFirst()
+        }
+      }
+      return true
+    }
+
+    guard let lineMap   = (delegate as? CodeStorageDelegate)?.lineMap,
+          let startLine = lineMap.lineContaining(index: location)
+    else { return }
+
+    let firstLine = lineMap.lines[startLine]
+    if let info = firstLine.info {
+
+      let doContinue = enumerate(tokens: info.tokens,
+                                 commentRanges: info.commentRanges,
+                                 lineStart: firstLine.range.location,
+                                 startLocation: location - firstLine.range.location)
+      if !doContinue { return }
+
+    }
+
+    for line in lineMap.lines[startLine + 1 ..< lineMap.lines.count] {
+
+      if let info = line.info {
+
+        let doContinue = enumerate(tokens: info.tokens,
+                                   commentRanges: info.commentRanges,
+                                   lineStart: line.range.location,
+                                   startLocation: nil)
+        if !doContinue { return }
+
+      }
+    }
+  }
+  
+  /// Enumerate tokens and comment spans in the given range.
+  ///
+  /// - Parameters:
+  ///   - range: The range whose tokens are being enumerated. The first and last token may extend left and right
+  ///       outside the given range.
+  ///   - block: A block invoked foro every range.
+  ///
+  func enumerateTokens(in range: NSRange, using block: (LineToken) -> Void) {
+    enumerateTokens(from: range.location) { token in
+
+      block(token)
+      return token.range.max < range.max
+    }
+  }
+  
+  /// Return all tokens in the given range.
+  ///
+  /// - Parameter range: The range whose tokens are returned.
+  /// - Returns: An array containing the tokens in the range, where first and last token may extend left and right
+  ///     outside the given range.
+  ///
+  func tokens(in range: NSRange) -> [LineToken] {
+    var tokens: [LineToken] = []
+    enumerateTokens(in: range) { tokens.append($0) }
+    return tokens
+  }
 
   /// If the given location is just past a bracket, return its matching bracket's token range if it exists and the
   /// matching bracket is within the given range of lines.
@@ -397,5 +453,66 @@ extension CodeStorage {
 
     }
     return nil
+  }
+}
+
+
+// MARK: -
+// MARK: Text content storage
+
+class CodeContentStorage: NSTextContentStorage {
+
+  override func processEditing(for textStorage: NSTextStorage,
+                               edited editMask: EditActions,
+                               range newCharRange: NSRange,
+                               changeInLength delta: Int,
+                               invalidatedRange invalidatedCharRange: NSRange)
+  {
+    super.processEditing(for: textStorage,
+                         edited: editMask,
+                         range: newCharRange,
+                         changeInLength: delta,
+                         invalidatedRange: invalidatedCharRange)
+
+    // NB: We need to wait until after the content storage has processed the edit before text locations (and ranges)
+    //     match characters counts in the backing store again.
+    if let codeStorageDelegate   = textStorage.delegate as? CodeStorageDelegate,
+       let invalidationRange     = codeStorageDelegate.tokenInvalidationRange,
+       let invalidationTextRange = textRange(for: invalidationRange)
+    {
+      for textLayoutManager in textLayoutManagers {
+
+        // Invalidate the rendering attributes for syntax highlighting in the entire invalidated token range.
+        textLayoutManager.invalidateRenderingAttributes(for: invalidationTextRange)
+        if delta > 1,
+           let textLayoutManagerDelegate = textLayoutManager.delegate,
+           textLayoutManagerDelegate.isKind(of: MinimapTextLayoutManagerDelegate.self)
+        {
+
+          // MARK: [Note Minimap Redraw Voodoo]
+          // Getting the minimap to redraw properly in case of changes affecting a larger area has proven difficult
+          // and OS-specific. It depends on timing and concurrency issues in the text system and I haven't been able to
+          // find a reliable way of tackling this problem.
+          //
+          // Below is a partial fix for macOS and iOS, but visionOS also requires invalidation code in the
+          // `textDidChangeNotification` observer configured in during initialisation of the `UITextView`-flavour of
+          // `CodeView`.
+          //
+          // If larger amounts of text are added, we need to invalidate the layout of the minimap (i.e., secondary)
+          // layout manager explicitly. We cannot do that inline, though, if we don't want to risk a deadlock (as
+          // experience shows). Hence, we delay that action by enqueueing this operation. This does, unfortunately, lead
+          // to a visible delay on macOS, which I don't know how to avoid at the moment.
+          Task { @MainActor in
+            if let invalidationTextRange = textRange(for: invalidationRange) {
+#if os(iOS) || os(visionOS)
+              // For some reason, for the voodoo to work, we need to ensure layour first on iOS...
+              textLayoutManager.ensureLayout(for: invalidationTextRange)
+#endif
+              textLayoutManager.invalidateLayout(for: invalidationTextRange)  // warning is bogus as this will run on the main thread
+            }
+          }
+        }
+      }
+    }
   }
 }

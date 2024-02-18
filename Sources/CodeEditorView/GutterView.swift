@@ -15,7 +15,7 @@ import LanguageSupport
 private let logger = Logger(subsystem: "org.justtesting.CodeEditorView", category: "GutterView")
 
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 
 // MARK: -
 // MARK: UIKit version
@@ -85,7 +85,7 @@ final class GutterView: OSView {
     self.getMessageViews = getMessageViews
     self.isMinimapGutter = isMinimapGutter
     super.init(frame: frame)
-#if os(iOS)
+#if os(iOS) || os(visionOS)
     isOpaque = false
 #endif
   }
@@ -191,7 +191,7 @@ extension GutterView {
           ]
       ]
     )
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     let font = OSFont(descriptor: desc, size: 0)
     #elseif os(macOS)
     let font = OSFont(descriptor: desc, size: 0) ?? OSFont.systemFont(ofSize: 0)
@@ -247,6 +247,14 @@ extension GutterView {
             attributes = selectedLines.contains(lineRange.endIndex - 1) ? textAttributesSelected : textAttributesDefault
         if gutterRect.intersects(rect) {
           ("\(lineMap.lines.count)" as NSString).draw(in: gutterRect, withAttributes: attributes)
+        }
+
+      } else if textRange.isEmpty {  // Empty document (i.e., there is no layout fragment)
+
+        let firstTextRect = CGRect(x: 0, y: 0, width: 0, height: font.lineHeight),
+            gutterRect    = gutterRectForLineNumbersFrom(textRect: firstTextRect)
+        if gutterRect.intersects(rect) {
+          ("\(1)" as NSString).draw(in: gutterRect, withAttributes: textAttributesSelected)
         }
       }
     }
