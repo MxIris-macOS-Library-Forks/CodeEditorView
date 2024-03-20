@@ -187,10 +187,17 @@ public struct Tokeniser<TokenType: Equatable, StateType: TokeniserState> {
       }
     }
 
+    func longestFirst(lhs: TokenDescription<TokenType, StateType>, rhs: TokenDescription<TokenType, StateType>) -> Bool
+    {
+      (lhs.singleLexeme ?? "").count >= (rhs.singleLexeme ?? "").count
+    }
+
     func tokeniser(for stateMap: [TokenDescription<TokenType, StateType>]) -> Tokeniser<TokenType, StateType>.State?
     {
 
-      let singleLexemeTokens      = stateMap.filter{ $0.singleLexeme != nil },
+      // NB: The list of single lexeme tokens need to be from longest to shortest, to ensure that the longer one is
+      //     chosen if the lexeme of one token is a prefix of another token's lexeme.
+      let singleLexemeTokens      = stateMap.filter{ $0.singleLexeme != nil }.sorted(by: longestFirst),
           multiLexemeTokens       = stateMap.filter{ $0.singleLexeme == nil },
           singleLexemeTokensRegex = combine(alternatives: singleLexemeTokens),
           multiLexemeTokensRegex  = combineWithCapture(alternatives: multiLexemeTokens)
@@ -230,12 +237,15 @@ public struct Tokeniser<TokenType: Equatable, StateType: TokeniserState> {
 
 extension StringProtocol {
 
-  /// Tokenise the given range and return the encountered tokens.
+  /// Tokenise `self` and return the encountered tokens.
   ///
   /// - Parameters:
   ///   - tokeniser: Pre-compiled tokeniser.
   ///   - startState: Starting state of the tokeniser.
   /// - Returns: The sequence of the encountered tokens.
+  ///
+  /// NB: If this function is applied to a `Substring`, the ranges of the tokens are relative to the start of the
+  ///     `Substring` (and not of the `String` of which this `Substring` is a part).
   ///
   public func tokenise<TokenType, StateType>(with tokeniser: Tokeniser<TokenType, StateType>,
                                              state startState: StateType)
