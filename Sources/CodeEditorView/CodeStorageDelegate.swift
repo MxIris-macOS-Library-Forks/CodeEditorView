@@ -287,6 +287,13 @@ class CodeStorageDelegate: NSObject, NSTextStorageDelegate {
       }
     }
 
+    // Information for change updates to send to a language service (needs the line map before it is updated).
+    let rangeBeforeEditing      = editedRange.shifted(endBy: -delta) ?? editedRange,
+        linesBeforeEditing      = lineMap.linesOf(range: rangeBeforeEditing),
+        lastLineBeforeEditing   = linesBeforeEditing.last ?? 0,
+        lastLineStartLocation   = lineMap.lookup(line: lastLineBeforeEditing)?.range.location ?? 0,
+        lastColumnBeforeEditing = rangeBeforeEditing.max - lastLineStartLocation
+
     lineMap.updateAfterEditing(string: textStorage.string, range: editedRange, changeInLength: delta)
     var (affectedRange: highlightingRange, lines: highlightingLines) = tokenise(range: editedRange, in: textStorage)
 
@@ -345,7 +352,11 @@ class CodeStorageDelegate: NSObject, NSTextStorageDelegate {
     setText(textStorage.string)
 
     // Notify language service (if attached)
-    notifyLanguageServiceOfChange(in: textStorage, range: editedRange, changeInLength: delta)
+    notifyLanguageServiceOfChange(in: textStorage,
+                                  range: editedRange,
+                                  changeInLength: delta,
+                                  linesBeforeEditing: linesBeforeEditing,
+                                  lastColumnBeforeEditing: lastColumnBeforeEditing)
   }
 
 
@@ -353,28 +364,27 @@ class CodeStorageDelegate: NSObject, NSTextStorageDelegate {
 
   private func notifyLanguageServiceOfChange(in textStorage: NSTextStorage,
                                              range editedRange: NSRange,
-                                             changeInLength delta: Int) {
+                                             changeInLength delta: Int,
+                                             linesBeforeEditing: Range<Int>,
+                                             lastColumnBeforeEditing: Int)
+  {
 
     // Notify language service (if attached)
-    let text         = (textStorage.string as NSString).substring(with: editedRange),
-        afterLine    = lineMap.lineOf(index: editedRange.max),
-        lines        = lineMap.linesAffected(by: editedRange, changeInLength: delta),
-        lineChange   = if let afterLine,
-                          let beforeLine = lines.last { afterLine - beforeLine } else { 0 },
-        endColumn    = if let beforeLine     = lines.last,
-                           let beforeLineInfo = lineMap.lookup(line: beforeLine)
-                           {
-                             editedRange.max - delta - beforeLineInfo.range.location
-                           } else { 0 },
-        columnChange = if let afterLine,
-                          let info = lineMap.lookup(line: afterLine)
-                          {
-                                editedRange.max - info.range.location - endColumn
-                              } else { 0 }
+    guard let lastLineBeforeEditing = linesBeforeEditing.last,
+          let lastLineAfterEditing  = lineMap.lineOf(index: editedRange.max),
+          let lastLineStartLocation = lineMap.lookup(line: lastLineAfterEditing)?.range.location
+    else { return }
+
+    let text                    = (textStorage.string as NSString).substring(with: editedRange),
+        lineChange              = lastLineAfterEditing - lastLineBeforeEditing,
+        lastColumnAfterEditing  = editedRange.max - lastLineStartLocation,
+        columnChange            = lastColumnAfterEditing - lastColumnBeforeEditing,
+        linesAfterEditing       = lineMap.linesAffected(by: editedRange, changeInLength: delta)
+
 
     let skipDidChangeDocument = skipNextChangeNotificationToLanguageService
     skipNextChangeNotificationToLanguageService = false
-    Task { [editedRange, delta, lines, weak languageService, weak self] in
+    Task { [editedRange, delta, lineChange, columnChange, weak languageService, weak self] in
       guard let languageService else { return }
 
       do {
@@ -401,7 +411,7 @@ class CodeStorageDelegate: NSObject, NSTextStorageDelegate {
 
       }
 
-      await self?.requestSemanticTokens(for: lines, in: textStorage)
+      await self?.requestSemanticTokens(for: linesAfterEditing, in: textStorage)
     }
 
   }

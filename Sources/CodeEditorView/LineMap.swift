@@ -190,22 +190,25 @@ struct LineMap<LineInfo> {
     }
   }
 
-  /// Compute the lines affected by an editing activity.
+  /// Compute the lines affected by an editing activity. If the range includes extends to the end of its last line, the
+  /// result includes the following line, too.
   ///
   /// - Parameters:
   ///   - editedRange: The character range that was affected by editing (after the edit).
   ///   - delta: The length increase of the edited string (negative if it got shorter).
   /// - Returns: The zero-based range of lines (of the original string) that is affected by the editing action.
   ///
+  /// NB: This function assumes that the line map has *not yet* been updated by the editing activity.
+  ///
   func linesAffected(by editedRange: NSRange, changeInLength delta: Int) -> Range<Int> {
 
-    if let shiftedRange = editedRange.shifted(endBy: -delta) {
+    if let preEditRange = editedRange.shifted(endBy: -delta) {
 
       // To compute the line range, we extend the character range by one extra character. This is crucial as, if the
       // edited range ends on a newline, this may insert a new line break, which means, line *after* the new line break
       // also belongs to the affected lines.
       let oldStringRange = NSRange(location: 0, length: (lines.last?.range ?? .zero).max)
-      return linesOf(range: extend(range: shiftedRange, clippingTo: oldStringRange))
+      return linesOf(range: extend(range: preEditRange, clippingTo: oldStringRange))
 
     } else { return 0..<0 }
   }

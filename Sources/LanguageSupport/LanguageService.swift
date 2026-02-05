@@ -214,7 +214,7 @@ public protocol LanguageService: AnyObject {
   /// - Parameters:
   ///   - changeLocation: The location at which the change originates.
   ///   - delta: The change of the document length.
-  ///   - deltaLine: The change of the number of lines.
+  ///   - deltaLine: The change of the number of lines of the changed text range.
   ///   - deltaColumn: The change of the column position on the last line of the changed text.
   ///   - text: The text at `changeLocation` after the change.
   ///
