@@ -160,6 +160,10 @@ class CodeStorageDelegate: NSObject, NSTextStorageDelegate {
   /// Hook to propagate changes to the text store upwards in the view hierarchy.
   ///
   let setText: (String) -> Void
+  
+  /// Forces setting of highlighting attributes for the given range.
+  ///
+  var setHighlightingAttributes: ((NSRange) -> Void)? = nil
 
   private(set) var lineMap = LineMap<LineInfo>(string: "")
 
@@ -720,18 +724,18 @@ extension CodeStorageDelegate {
           merge(semanticTokens: semanticTokens[i], into: firstLine + i)
         }
 
-        // Request redrawing for those lines
-        if let textStorageObserver = textStorage.textStorageObserver {
-          let range = lineMap.charRangeOf(lines: lines)
-          textStorageObserver.processEditing(for: textStorage,
-                                             edited: .editedAttributes,
-                                             range: range,
-                                             changeInLength: 0,
-                                             invalidatedRange: NSRange(location: 0, length: textStorage.string.count))
-                                                               // ^^If we don't invalidate the whole text, we
-                                                               // somehow lose highlighting for everything outside
-                                                               // of the invalidated range.
-        }
+        // Request highlighting for those lines
+        // NB: The following is still weird and has at least one display bug:
+        //     * `setHighlightingAttributes` works locally (e.g., changes in the current line), but with a larger range
+        //       only seesm to cover the first part.
+        //     * `textStorage.edited(_:range:changeInLength:)` works on larger ranges, but doesn't redraw the current
+        //       line.
+        //     FIXME: When pasting, the line after the pasted lines seems to always lose its semantic token highlighting.
+        let range = lineMap.charRangeOf(lines: lines)
+        self.setHighlightingAttributes?(range)
+        textStorage.beginEditing()
+        textStorage.edited(.editedAttributes, range: range, changeInLength: 0)
+        textStorage.endEditing()
 
       }
     } catch let error { logger.trace("Failed to get semantic tokens for line range \(lines): \(error.localizedDescription)") }
