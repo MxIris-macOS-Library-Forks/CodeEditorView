@@ -178,6 +178,12 @@ final class CodeView: UITextView {
                                             in: textLayoutManager)
     }
 
+    codeStorageDelegate.setHighlightingAttributes = {[weak codeStorage, weak textLayoutManager] range in
+      if let textLayoutManager {
+        codeStorage?.setHighlightingAttributes(for: range, in: textLayoutManager)
+      }
+    }
+
     // We can't do this — see [Note NSTextViewportLayoutControllerDelegate].
     //
     //    if let systemDelegate = codeLayoutManager.textViewportLayoutController.delegate {
@@ -534,6 +540,12 @@ final class CodeView: NSTextView {
       codeStorage.setHighlightingAttributes(for: textContentStorage.range(for: layoutFragment.rangeInElement),
                                             in: textLayoutManager)
     }.flatMap { observations.append($0) }
+
+    codeStorageDelegate.setHighlightingAttributes = {[weak codeStorage, weak textLayoutManager] range in
+      if let textLayoutManager {
+        codeStorage?.setHighlightingAttributes(for: range, in: textLayoutManager)
+      }
+    }
 
     // We can't do this — see [Note NSTextViewportLayoutControllerDelegate].
     //
